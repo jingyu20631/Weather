@@ -14,43 +14,57 @@ st.set_page_config(
 def load_data():
     url = "https://raw.githubusercontent.com/jingyu20631/Weather/main/open-meteo-36.50N127.75E175m.csv"
     
-    # Open-Meteo CSV는 상단 메타데이터(# 주석)와 2번째 줄 단위(units) 행을 건너뛰어야 합니다.
-    # skiprows=0 위치의 헤더를 읽은 뒤, 데이터 타입 오염을 막기 위해 comment='#'와 필요 시 적절히 처리합니다.
+    # 1. Open-Meteo CSV 읽기 (# 주석 제거)
     df = pd.read_csv(url, comment='#')
     
-    # 컬럼명 공백 제거
-    df.columns = df.columns.str.strip()
+    # 컬럼 이름의 공백 및 따옴표 제거
+    df.columns = df.columns.str.strip().str.replace('"', '')
     
-    # time/date 컬럼 찾기
+    # 2. 날짜/시간 컬럼 탐색 및 변환
     time_col = [col for col in df.columns if 'time' in col.lower() or 'date' in col.lower()]
-    
     if time_col:
-        col_name = time_col[0]
-        # 'iso8601'이나 'GMT' 등의 단위 행 및 유효하지 않은 문자열 제거 후 datetime 변환
-        df[col_name] = pd.to_datetime(df[col_name], errors='coerce')
-        # 변환 실패(NaT) 행 삭제
-        df = df.dropna(subset=[col_name])
-        
-        df['datetime'] = df[col_name]
+        t_col = time_col[0]
+        df[t_col] = pd.to_datetime(df[t_col], errors='coerce')
+        df = df.dropna(subset=[t_col])
+        df['datetime'] = df[t_col]
         df['date'] = df['datetime'].dt.date
-    
-    # 수치형 데이터 변환 (단위 행 등이 섞여 string으로 인식된 경우 대비)
-    temp_col = [c for c in df.columns if 'temperature_2m' in c and 'apparent' not in c]
-    apparent_col = [c for c in df.columns if 'apparent_temperature' in c]
-    wind_col = [c for c in df.columns if 'wind_speed' in c or 'windspeed' in c]
-    
+    else:
+        st.error("시간(time) 컬럼을 찾을 수 없습니다.")
+        return pd.DataFrame()
+
+    # 3. 유연한 컬럼 탐색 (온도, 체감온도, 풍속)
+    temp_col = [c for c in df.columns if 'temperature_2m' in c.lower() and 'apparent' not in c.lower()]
+    app_col = [c for c in df.columns if 'apparent' in c.lower()]
+    wind_col = [c for c in df.columns if 'wind_speed' in c.lower() or 'windspeed' in c.lower()]
+
+    # 4. 안전하게 신규 컬럼 생성 (기존 컬럼이 없으면 NaN으로 생성 후 할당)
     if temp_col:
         df['temperature'] = pd.to_numeric(df[temp_col[0]], errors='coerce')
-    if apparent_col:
-        df['apparent_temperature'] = pd.to_numeric(df[apparent_col[0]], errors='coerce')
+    else:
+        df['temperature'] = pd.NA
+
+    if app_col:
+        df['apparent_temperature'] = pd.to_numeric(df[app_col[0]], errors='coerce')
+    else:
+        df['apparent_temperature'] = pd.NA
+
     if wind_col:
         df['wind_speed'] = pd.to_numeric(df[wind_col[0]], errors='coerce')
-        
-    # 결측치 정돈
-    df = df.dropna(subset=['temperature', 'apparent_temperature', 'wind_speed'])
+    else:
+        df['wind_speed'] = pd.NA
+
+    # 5. 필수 컬럼 세트 존재 여부 검증
+    required_cols = ['temperature', 'apparent_temperature', 'wind_speed']
+    
+    # 세 컬럼 모두 생성되어 있는지 확인
+    for col in required_cols:
+        if col not in df.columns:
+            df[col] = pd.NA
+
+    # 수치 데이터가 없는 행 제거
+    df = df.dropna(subset=required_cols)
     
     return df
-
 try:
     df = load_data()
     
