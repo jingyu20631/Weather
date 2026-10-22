@@ -13,40 +13,60 @@ st.set_page_config(
 def load_data():
     url = "https://raw.githubusercontent.com/jingyu20631/Weather/main/open-meteo-36.50N127.75E175m.csv"
     
-    # Open-Meteo CSV 특성:
-    # 0~2번째 행 중 # 주석을 다루고, 헤더 밑의 '단위(iso8601, °C 등)' 행을 건너뜁니다.
-    # comment='#'로 주석 제외, skiprows=[3] 또는 단위행 자동 감지로 안전 파싱
-    df = pd.read_csv(url, comment='#')
-    
-    # 컬럼명에 잔여 공백 및 큰따옴표 제거
-    df.columns = df.columns.str.strip().str.replace('"', '')
+    # 1. 파일 전체를 문자열 로드로 읽어와 주석(#) 제외
+    try:
+        # comment='#'로 주석 라인 무시하고 읽기
+        raw_df = pd.read_csv(url, comment='#', header=None)
+    except Exception as e:
+        st.error(f"CSV 파일을 읽을 수 없습니다: {e}")
+        return pd.DataFrame(), None
 
-    # 첫 행이 단위 행(iso8601, °C, km/h 등)인지 검사 후 제거
+    if raw_df.empty:
+        return pd.DataFrame(), raw_df
+
+    # 2. 헤더 행 감지 (첫 번째 열에 'time'이나 'date'가 들어있는 행 찾기)
+    header_idx = None
+    for idx, row in raw_df.iterrows():
+        first_cell = str(row.iloc[0]).lower()
+        if 'time' in first_cell or 'date' in first_cell:
+            header_idx = idx
+            break
+
+    # 헤더를 못 찾은 경우 0번 행을 헤더로 설정
+    if header_idx is None:
+        header_idx = 0
+
+    # 3. 헤더 설정 및 데이터 재구성
+    df = raw_df.iloc[header_idx + 1:].copy()
+    df.columns = raw_df.iloc[header_idx].values
+    
+    # 컬럼명 공백 제거
+    df.columns = [str(c).strip().replace('"', '') for c in df.columns]
+
+    # 4. 첫 번째 데이터 행이 단위(iso8601, °C, m/s 등)인지 확인하고 제거
     first_val = str(df.iloc[0, 0]).lower()
-    if 'iso' in first_val or 'unit' in first_val or 'gmt' in first_val:
+    if 'iso' in first_val or 'unit' in first_val or 'gmt' in first_val or '°c' in first_val:
         df = df.iloc[1:].reset_index(drop=True)
-        
-    # 1. datetime 컬럼 변환 (첫 번째 열)
+
+    # 5. 시간/날짜 컬럼 처리 (첫번째 컬럼)
     time_col_name = df.columns[0]
     df['datetime'] = pd.to_datetime(df[time_col_name], errors='coerce')
     df = df.dropna(subset=['datetime'])
     df['date'] = df['datetime'].dt.date
 
-    # 2. Open-Meteo 표준 컬럼 파싱 (문자열 부분 매칭)
-    temp_col = None
-    app_col = None
-    wind_col = None
+    # 6. 컬럼 동적 매핑 (기온, 체감온도, 풍속)
+    temp_col, app_col, wind_col = None, None, None
 
     for col in df.columns:
         c_low = col.lower()
         if 'temperature_2m' in c_low and 'apparent' not in c_low:
             temp_col = col
-        elif 'apparent_temperature' in c_low:
+        elif 'apparent' in c_low:
             app_col = col
-        elif 'wind_speed_10m' in c_low or 'windspeed_10m' in c_low or 'wind_speed' in c_low:
+        elif 'wind' in c_low:
             wind_col = col
 
-    # 검색 실패 시 위치(index) 기반 fallback
+    # 매핑 실패 시 컬럼 인덱스 위치(1, 2, 3번째 열) 기준 fallback
     if not temp_col and len(df.columns) > 1:
         temp_col = df.columns[1]
     if not app_col and len(df.columns) > 2:
@@ -54,21 +74,27 @@ def load_data():
     if not wind_col and len(df.columns) > 3:
         wind_col = df.columns[3]
 
-    # 3. 수치형 데이터로 변환
+    # 7. 수치형 데이터 강제 변환
     df['temperature'] = pd.to_numeric(df[temp_col], errors='coerce')
     df['apparent_temperature'] = pd.to_numeric(df[app_col], errors='coerce')
     df['wind_speed'] = pd.to_numeric(df[wind_col], errors='coerce')
 
-    # 유효한 수치 데이터만 최종 필터링
-    df = df.dropna(subset=['temperature', 'apparent_temperature', 'wind_speed'])
+    # 수치 데이터가 모두 NaN인 행 제외
+    valid_df = df.dropna(subset=['temperature', 'apparent_temperature', 'wind_speed'])
 
-    return df
+    return valid_df, raw_df
 
 try:
-    df = load_data()
+    df, raw_df = load_data()
 
-    if df.empty:
-        st.error("데이터를 불러왔으나 유효한 날씨 데이터가 없습니다. CSV 파일 상태를 확인해주세요.")
+    if df is None or df.empty:
+        st.error("⚠️ 데이터를 불러왔으나 유효한 날씨 데이터 행을 추출하지 못했습니다.")
+        
+        # 원본 구조 디버깅 영역
+        if raw_df is not None and not raw_df.empty:
+            with st.expander("🔍 [디버그] 읽어온 원본 CSV 파일 상단 10줄 확인하기"):
+                st.write("CSV 파일의 실제 행 구조입니다:")
+                st.dataframe(raw_df.head(10))
     else:
         st.title("🌤️ 일별 날씨 & 바람 정보 데이터 세트")
         st.markdown("Open-Meteo 데이터셋 기반 **기온, 체감온도, 풍속** 상태 분석")
@@ -148,4 +174,4 @@ try:
             st.dataframe(daily_df[['datetime', 'temperature', 'apparent_temperature', 'wind_speed']], use_container_width=True)
 
 except Exception as e:
-    st.error(f"데이터를 불러오는 중 오류가 발생했습니다: {e}")
+    st.error(f"데이터 처리 중 에러가 발생했습니다: {e}")
