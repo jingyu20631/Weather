@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import requests
-import io
 
 # 페이지 기본 설정
 st.set_page_config(
@@ -15,67 +13,62 @@ st.set_page_config(
 def load_data():
     url = "https://raw.githubusercontent.com/jingyu20631/Weather/main/open-meteo-36.50N127.75E175m.csv"
     
-    # 1. 텍스트로 먼져 받아와서 주석(#)이 아닌 줄만 필터링
-    res = requests.get(url)
-    res.raise_for_status()
-    lines = [line for line in res.text.splitlines() if not line.strip().startswith('#')]
+    # Open-Meteo CSV 특성:
+    # 0~2번째 행 중 # 주석을 다루고, 헤더 밑의 '단위(iso8601, °C 등)' 행을 건너뜁니다.
+    # comment='#'로 주석 제외, skiprows=[3] 또는 단위행 자동 감지로 안전 파싱
+    df = pd.read_csv(url, comment='#')
     
-    if not lines:
-        st.error("데이터 파일이 비어 있거나 주석만 존재합니다.")
-        return pd.DataFrame()
-    
-    # 2. CSV 로드
-    csv_data = "\n".join(lines)
-    df = pd.read_csv(io.StringIO(csv_data))
-    
-    # 컬럼명 정리
+    # 컬럼명에 잔여 공백 및 큰따옴표 제거
     df.columns = df.columns.str.strip().str.replace('"', '')
-    
-    # 3. 만약 0번째 행이 단위(iso8601, °C, m/s 등)인 경우 데이터에서 제거
-    # 첫 행의 time/date 컬럼 값이 숫자로 변환되지 않거나 iso8601 문구가 들어있는지 확인
+
+    # 첫 행이 단위 행(iso8601, °C, km/h 등)인지 검사 후 제거
     first_val = str(df.iloc[0, 0]).lower()
-    if 'iso8601' in first_val or 'unixtime' in first_val or 'gmt' in first_val:
+    if 'iso' in first_val or 'unit' in first_val or 'gmt' in first_val:
         df = df.iloc[1:].reset_index(drop=True)
-    
-    # 4. 시간/날짜 컬럼 탐색 및 변환
-    time_col = [c for c in df.columns if 'time' in c.lower() or 'date' in c.lower()]
-    if not time_col:
-        st.error("시간(time) 컬럼을 찾을 수 없습니다.")
-        return pd.DataFrame()
-    
-    t_name = time_col[0]
-    df['datetime'] = pd.to_datetime(df[t_name], errors='coerce')
+        
+    # 1. datetime 컬럼 변환 (첫 번째 열)
+    time_col_name = df.columns[0]
+    df['datetime'] = pd.to_datetime(df[time_col_name], errors='coerce')
     df = df.dropna(subset=['datetime'])
     df['date'] = df['datetime'].dt.date
 
-    # 5. 기온, 체감온도, 풍속 컬럼 탐색
-    temp_col = [c for c in df.columns if 'temperature_2m' in c.lower() and 'apparent' not in c.lower()]
-    app_col = [c for c in df.columns if 'apparent' in c.lower()]
-    wind_col = [c for c in df.columns if 'wind' in c.lower()]
+    # 2. Open-Meteo 표준 컬럼 파싱 (문자열 부분 매칭)
+    temp_col = None
+    app_col = None
+    wind_col = None
 
-    # 찾지 못한 경우 대체 컬럼 탐색 (컬럼 순서 기반 감지)
+    for col in df.columns:
+        c_low = col.lower()
+        if 'temperature_2m' in c_low and 'apparent' not in c_low:
+            temp_col = col
+        elif 'apparent_temperature' in c_low:
+            app_col = col
+        elif 'wind_speed_10m' in c_low or 'windspeed_10m' in c_low or 'wind_speed' in c_low:
+            wind_col = col
+
+    # 검색 실패 시 위치(index) 기반 fallback
     if not temp_col and len(df.columns) > 1:
-        temp_col = [df.columns[1]]
+        temp_col = df.columns[1]
     if not app_col and len(df.columns) > 2:
-        app_col = [df.columns[2]]
+        app_col = df.columns[2]
     if not wind_col and len(df.columns) > 3:
-        wind_col = [df.columns[3]]
+        wind_col = df.columns[3]
 
-    # 6. 수치형 데이터 강제 변환
-    df['temperature'] = pd.to_numeric(df[temp_col[0]], errors='coerce')
-    df['apparent_temperature'] = pd.to_numeric(df[app_col[0]], errors='coerce')
-    df['wind_speed'] = pd.to_numeric(df[wind_col[0]], errors='coerce')
+    # 3. 수치형 데이터로 변환
+    df['temperature'] = pd.to_numeric(df[temp_col], errors='coerce')
+    df['apparent_temperature'] = pd.to_numeric(df[app_col], errors='coerce')
+    df['wind_speed'] = pd.to_numeric(df[wind_col], errors='coerce')
 
-    # NaN 데이터 제거
+    # 유효한 수치 데이터만 최종 필터링
     df = df.dropna(subset=['temperature', 'apparent_temperature', 'wind_speed'])
-    
+
     return df
 
 try:
     df = load_data()
 
     if df.empty:
-        st.error("데이터를 불러왔으나 유효한 날씨 데이터가 없습니다.")
+        st.error("데이터를 불러왔으나 유효한 날씨 데이터가 없습니다. CSV 파일 상태를 확인해주세요.")
     else:
         st.title("🌤️ 일별 날씨 & 바람 정보 데이터 세트")
         st.markdown("Open-Meteo 데이터셋 기반 **기온, 체감온도, 풍속** 상태 분석")
