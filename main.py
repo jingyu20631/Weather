@@ -14,31 +14,41 @@ st.set_page_config(
 def load_data():
     url = "https://raw.githubusercontent.com/jingyu20631/Weather/main/open-meteo-36.50N127.75E175m.csv"
     
-    # Open-Meteo CSV는 상단에 주석(header metadata)이 있을 수 있으므로 comment='#' 처리
+    # Open-Meteo CSV는 상단 메타데이터(# 주석)와 2번째 줄 단위(units) 행을 건너뛰어야 합니다.
+    # skiprows=0 위치의 헤더를 읽은 뒤, 데이터 타입 오염을 막기 위해 comment='#'와 필요 시 적절히 처리합니다.
     df = pd.read_csv(url, comment='#')
     
-    # 컬럼 이름의 공백 제거 및 열 이름 표준화
+    # 컬럼명 공백 제거
     df.columns = df.columns.str.strip()
     
-    # time / date 컬럼을 datetime 형식으로 변환
+    # time/date 컬럼 찾기
     time_col = [col for col in df.columns if 'time' in col.lower() or 'date' in col.lower()]
+    
     if time_col:
-        df['datetime'] = pd.to_datetime(df[time_col[0]])
+        col_name = time_col[0]
+        # 'iso8601'이나 'GMT' 등의 단위 행 및 유효하지 않은 문자열 제거 후 datetime 변환
+        df[col_name] = pd.to_datetime(df[col_name], errors='coerce')
+        # 변환 실패(NaT) 행 삭제
+        df = df.dropna(subset=[col_name])
+        
+        df['datetime'] = df[col_name]
         df['date'] = df['datetime'].dt.date
     
-    # 컬럼 매핑 (온도, 체감온도, 바람 관련 컬럼 탐색)
+    # 수치형 데이터 변환 (단위 행 등이 섞여 string으로 인식된 경우 대비)
     temp_col = [c for c in df.columns if 'temperature_2m' in c and 'apparent' not in c]
     apparent_col = [c for c in df.columns if 'apparent_temperature' in c]
     wind_col = [c for c in df.columns if 'wind_speed' in c or 'windspeed' in c]
     
-    # 표준 컬럼명으로 정리
     if temp_col:
-        df['temperature'] = df[temp_col[0]]
+        df['temperature'] = pd.to_numeric(df[temp_col[0]], errors='coerce')
     if apparent_col:
-        df['apparent_temperature'] = df[apparent_col[0]]
+        df['apparent_temperature'] = pd.to_numeric(df[apparent_col[0]], errors='coerce')
     if wind_col:
-        df['wind_speed'] = df[wind_col[0]]
+        df['wind_speed'] = pd.to_numeric(df[wind_col[0]], errors='coerce')
         
+    # 결측치 정돈
+    df = df.dropna(subset=['temperature', 'apparent_temperature', 'wind_speed'])
+    
     return df
 
 try:
